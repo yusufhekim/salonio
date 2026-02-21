@@ -1,6 +1,6 @@
-import { create } from 'zustand';
+import { create } from "zustand";
 
-type Role = 'guest' | 'customer' | 'barber';
+type Role = "guest" | "customer" | "kuafor";
 
 interface PlaceholderUser {
   email: string;
@@ -22,19 +22,19 @@ interface AuthState {
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
-  role: 'guest',
+  role: "guest",
   isAuthenticated: false,
   currentUser: null,
 
   placeholderUsers: [
-    { email: 'test@salonio.com', password: '123456', role: 'customer' },
-    { email: 'barber@salonio.com', password: '123456', role: 'barber' },
+    { email: "test@salonio.com", password: "123456", role: "customer" },
+    { email: "kuafor@salonio.com", password: "123456", role: "kuafor" },
   ],
 
   login: (email, password) => {
     const { placeholderUsers } = get();
     const match = placeholderUsers.find(
-      (u) => u.email === email.trim().toLowerCase() && u.password === password
+      (u) => u.email === email.trim().toLowerCase() && u.password === password,
     );
 
     if (match) {
@@ -52,11 +52,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   logout: () =>
     set({
       currentUser: null,
-      role: 'guest',
+      role: "guest",
       isAuthenticated: false,
     }),
 
   setRole: (role) => set({ role }),
   setAuthenticated: (value) => set({ isAuthenticated: value }),
-  reset: () => set({ currentUser: null, role: 'guest', isAuthenticated: false }),
+  reset: () =>
+    set({ currentUser: null, role: "guest", isAuthenticated: false }),
 }));

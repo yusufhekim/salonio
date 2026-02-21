@@ -14,7 +14,7 @@ import {
   getIlceler,
   getMahalleler,
 } from '../../../shared/constants/locationData';
-import { useCustomerStore } from '@store';
+import { useCustomerStore, useBookingStore } from '@store';
 
 /* ─── placeholder kuaför data ─── */
 interface PlaceholderKuafor {
@@ -131,11 +131,11 @@ export default function HomeScreen() {
   const [selectedIl, setSelectedIl] = useState('');
   const [selectedIlce, setSelectedIlce] = useState('');
   const [selectedMahalle, setSelectedMahalle] = useState('');
-  const [selectedKuafor, setSelectedKuaforLocal] = useState<PlaceholderKuafor | null>(null);
+  const selectedKuafor = useCustomerStore((s) => s.selectedKuafor);
   const setSelectedKuaforStore = useCustomerStore((s) => s.setSelectedKuafor);
+  const setSelectedBarber = useBookingStore((s) => s.setSelectedBarber);
 
   const handleKuaforSelect = (kuafor: PlaceholderKuafor) => {
-    setSelectedKuaforLocal(kuafor);
     setSelectedKuaforStore({
       id: kuafor.id,
       name: kuafor.name,
@@ -143,6 +143,12 @@ export default function HomeScreen() {
       ilce: kuafor.ilce,
       mahalle: kuafor.mahalle,
     });
+    setSelectedBarber({ id: kuafor.id, name: kuafor.name });
+  };
+
+  const handleClearSelectedKuafor = () => {
+    setSelectedKuaforStore(null);
+    setSelectedBarber(null);
   };
 
   /* cascade resets */
@@ -255,12 +261,19 @@ export default function HomeScreen() {
         />
       </View>
 
-      {/* ── selection banner ── */}
+      {/* ── selected barber container with close (X) ── */}
       {selectedKuafor && (
         <View style={styles.selectionBanner}>
-          <Text style={styles.selectionText}>
+          <Text style={styles.selectionText} numberOfLines={1}>
             Seçiminiz: <Text style={styles.selectionName}>{selectedKuafor.name}</Text>
           </Text>
+          <TouchableOpacity
+            style={styles.selectionCloseButton}
+            onPress={handleClearSelectedKuafor}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          >
+            <Text style={styles.selectionCloseIcon}>✕</Text>
+          </TouchableOpacity>
         </View>
       )}
 
@@ -393,6 +406,9 @@ const styles = StyleSheet.create({
 
   /* selection banner */
   selectionBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     backgroundColor: '#EFF6FF',
     borderRadius: 10,
     padding: 12,
@@ -400,8 +416,17 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#BFDBFE',
   },
-  selectionText: { fontSize: 14, color: '#1E40AF' },
+  selectionText: { fontSize: 14, color: '#1E40AF', flex: 1 },
   selectionName: { fontWeight: '700' },
+  selectionCloseButton: {
+    padding: 4,
+    marginLeft: 8,
+  },
+  selectionCloseIcon: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1E40AF',
+  },
 
   /* result count */
   resultCount: {

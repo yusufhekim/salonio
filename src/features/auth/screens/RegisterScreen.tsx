@@ -1,23 +1,23 @@
-import React, { useState } from 'react';
+import { auth, db } from "@infrastructure";
+import { useNavigation } from "@react-navigation/native";
+import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
+import { useAuthStore } from "@store";
+import { createUserWithEmailAndPassword } from "firebase/auth";
+import { doc, serverTimestamp, setDoc } from "firebase/firestore";
+import React, { useState } from "react";
 import {
-  View,
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  StyleSheet,
-  Alert,
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-} from 'react-native';
-import { createUserWithEmailAndPassword } from 'firebase/auth';
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
-import { auth, db } from '@infrastructure';
-import { useAuthStore } from '@store';
-import { useNavigation } from '@react-navigation/native';
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+  View,
+} from "react-native";
 
-type Role = 'customer' | 'barber';
+type Role = "customer" | "kuafor";
 
 type AuthStackParamList = {
   Login: undefined;
@@ -26,33 +26,38 @@ type AuthStackParamList = {
 };
 
 export default function RegisterScreen() {
-  const navigation = useNavigation<NativeStackNavigationProp<AuthStackParamList>>();
+  const navigation =
+    useNavigation<NativeStackNavigationProp<AuthStackParamList>>();
   const setRole = useAuthStore((state) => state.setRole);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
 
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [selectedRole, setSelectedRole] = useState<Role>('customer');
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [selectedRole, setSelectedRole] = useState<Role>("customer");
   const [loading, setLoading] = useState(false);
 
   const handleRegister = async () => {
     if (!email.trim() || !password.trim()) {
-      Alert.alert('Hata', 'E-posta ve şifre gereklidir.');
+      Alert.alert("Hata", "E-posta ve şifre gereklidir.");
       return;
     }
 
     if (password.length < 6) {
-      Alert.alert('Hata', 'Şifre en az 6 karakter olmalıdır.');
+      Alert.alert("Hata", "Şifre en az 6 karakter olmalıdır.");
       return;
     }
 
     setLoading(true);
     try {
-      const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password);
+      const userCredential = await createUserWithEmailAndPassword(
+        auth,
+        email.trim(),
+        password,
+      );
       const uid = userCredential.user.uid;
 
       // Save user profile with role in Firestore
-      await setDoc(doc(db, 'users', uid), {
+      await setDoc(doc(db, "users", uid), {
         email: email.trim(),
         role: selectedRole,
         createdAt: serverTimestamp(),
@@ -62,14 +67,14 @@ export default function RegisterScreen() {
       setAuthenticated(true);
     } catch (error: any) {
       const message =
-        error.code === 'auth/email-already-in-use'
-          ? 'Bu e-posta adresi zaten kullanılıyor.'
-          : error.code === 'auth/weak-password'
-          ? 'Şifre çok zayıf. En az 6 karakter kullanın.'
-          : error.code === 'auth/invalid-email'
-          ? 'Geçersiz e-posta adresi.'
-          : 'Kayıt başarısız. Lütfen tekrar deneyin.';
-      Alert.alert('Kayıt Hatası', message);
+        error.code === "auth/email-already-in-use"
+          ? "Bu e-posta adresi zaten kullanılıyor."
+          : error.code === "auth/weak-password"
+            ? "Şifre çok zayıf. En az 6 karakter kullanın."
+            : error.code === "auth/invalid-email"
+              ? "Geçersiz e-posta adresi."
+              : "Kayıt başarısız. Lütfen tekrar deneyin.";
+      Alert.alert("Kayıt Hatası", message);
     } finally {
       setLoading(false);
     }
@@ -78,7 +83,7 @@ export default function RegisterScreen() {
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
       <View style={styles.inner}>
         <Text style={styles.title}>Kayıt Ol</Text>
@@ -109,14 +114,14 @@ export default function RegisterScreen() {
           <TouchableOpacity
             style={[
               styles.roleButton,
-              selectedRole === 'customer' && styles.roleButtonActive,
+              selectedRole === "customer" && styles.roleButtonActive,
             ]}
-            onPress={() => setSelectedRole('customer')}
+            onPress={() => setSelectedRole("customer")}
           >
             <Text
               style={[
                 styles.roleButtonText,
-                selectedRole === 'customer' && styles.roleButtonTextActive,
+                selectedRole === "customer" && styles.roleButtonTextActive,
               ]}
             >
               Müşteri
@@ -126,17 +131,17 @@ export default function RegisterScreen() {
           <TouchableOpacity
             style={[
               styles.roleButton,
-              selectedRole === 'barber' && styles.roleButtonActiveBarber,
+              selectedRole === "kuafor" && styles.roleButtonActiveBarber,
             ]}
-            onPress={() => setSelectedRole('barber')}
+            onPress={() => setSelectedRole("kuafor")}
           >
             <Text
               style={[
                 styles.roleButtonText,
-                selectedRole === 'barber' && styles.roleButtonTextActive,
+                selectedRole === "kuafor" && styles.roleButtonTextActive,
               ]}
             >
-              Berber
+              Kuaför
             </Text>
           </TouchableOpacity>
         </View>
@@ -169,39 +174,39 @@ export default function RegisterScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: "#FFFFFF",
   },
   inner: {
     flex: 1,
-    justifyContent: 'center',
+    justifyContent: "center",
     paddingHorizontal: 32,
   },
   title: {
     fontSize: 28,
-    fontWeight: '700',
-    textAlign: 'center',
+    fontWeight: "700",
+    textAlign: "center",
     marginBottom: 40,
-    color: '#111827',
+    color: "#111827",
   },
   input: {
     borderWidth: 1,
-    borderColor: '#D1D5DB',
+    borderColor: "#D1D5DB",
     borderRadius: 10,
     paddingVertical: 14,
     paddingHorizontal: 16,
     fontSize: 16,
     marginBottom: 16,
-    color: '#111827',
-    backgroundColor: '#F9FAFB',
+    color: "#111827",
+    backgroundColor: "#F9FAFB",
   },
   roleLabel: {
     fontSize: 14,
-    fontWeight: '500',
-    color: '#374151',
+    fontWeight: "500",
+    color: "#374151",
     marginBottom: 10,
   },
   roleContainer: {
-    flexDirection: 'row',
+    flexDirection: "row",
     gap: 12,
     marginBottom: 24,
   },
@@ -210,49 +215,49 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     borderRadius: 10,
     borderWidth: 2,
-    borderColor: '#D1D5DB',
-    alignItems: 'center',
+    borderColor: "#D1D5DB",
+    alignItems: "center",
   },
   roleButtonActive: {
-    borderColor: '#2563EB',
-    backgroundColor: '#EFF6FF',
+    borderColor: "#2563EB",
+    backgroundColor: "#EFF6FF",
   },
   roleButtonActiveBarber: {
-    borderColor: '#7C3AED',
-    backgroundColor: '#F5F3FF',
+    borderColor: "#7C3AED",
+    backgroundColor: "#F5F3FF",
   },
   roleButtonText: {
     fontSize: 15,
-    fontWeight: '600',
-    color: '#6B7280',
+    fontWeight: "600",
+    color: "#6B7280",
   },
   roleButtonTextActive: {
-    color: '#111827',
+    color: "#111827",
   },
   button: {
-    backgroundColor: '#2563EB',
+    backgroundColor: "#2563EB",
     paddingVertical: 16,
     borderRadius: 10,
-    alignItems: 'center',
+    alignItems: "center",
   },
   buttonDisabled: {
     opacity: 0.6,
   },
   buttonText: {
-    color: '#FFFFFF',
+    color: "#FFFFFF",
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: "600",
   },
   linkButton: {
     marginTop: 24,
-    alignItems: 'center',
+    alignItems: "center",
   },
   linkText: {
     fontSize: 14,
-    color: '#6B7280',
+    color: "#6B7280",
   },
   linkBold: {
-    color: '#2563EB',
-    fontWeight: '600',
+    color: "#2563EB",
+    fontWeight: "600",
   },
 });

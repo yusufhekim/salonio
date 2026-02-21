@@ -23,9 +23,18 @@ export default function BookingFlowScreen() {
   const { slot, date, barberId, kuaforName } = route.params;
 
   const addAppointment = useBookingStore((s) => s.addAppointment);
+  const hasAppointmentOnDate = useBookingStore((s) => s.hasAppointmentOnDate);
   const addNotification = useNotificationStore((s) => s.addNotification);
 
   const handleConfirm = async () => {
+    if (hasAppointmentOnDate(date)) {
+      Alert.alert(
+        'Uyarı',
+        'Aynı gün içerisinde yalnızca 1 randevu oluşturabilirsiniz. Önce mevcut randevunuzu iptal etmelisiniz.'
+      );
+      return;
+    }
+
     const newAppointment: Appointment = {
       id: Date.now().toString(),
       customerId: 'placeholder-customer',

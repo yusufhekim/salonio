@@ -1,5 +1,5 @@
 export { useAuthStore } from './authStore';
 export { useBookingStore } from './bookingStore';
-export { useBarberStore } from './barberStore';
+export { useBarberStore, type WorkingDayKey } from './barberStore';
 export { useCustomerStore } from './customerStore';
 export { useNotificationStore } from './notificationStore';

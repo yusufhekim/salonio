@@ -1,6 +1,7 @@
 import React from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { AuthProvider } from '../context/AuthContext';
 import { ThemeProvider } from './ThemeProvider';
 import RootNavigator from '../navigation/RootNavigator';
 
@@ -10,9 +11,11 @@ export function AppProviders() {
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-        <NavigationContainer>
-          <RootNavigator />
-        </NavigationContainer>
+        <AuthProvider>
+          <NavigationContainer>
+            <RootNavigator />
+          </NavigationContainer>
+        </AuthProvider>
       </ThemeProvider>
     </QueryClientProvider>
   );

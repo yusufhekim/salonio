@@ -8,11 +8,11 @@ import {
   Alert,
   ScrollView,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { generateAvailableSlots, checkConflict } from '../../availability/services';
-import { cancelAppointment } from '../services';
-import { useBookingStore, useCustomerStore } from '@store';
+import { generateAvailableSlots, generateSlotsFromWorkingHours, checkConflict } from '../../availability/services';
+import { useBookingStore, useCustomerStore, useBarberStore, type WorkingDayKey } from '@store';
 import type { BookingStackParamList } from '../../customer/navigation/CustomerNavigator';
 
 type NavProp = NativeStackNavigationProp<BookingStackParamList, 'SlotPickerMain'>;
@@ -20,7 +20,18 @@ type NavProp = NativeStackNavigationProp<BookingStackParamList, 'SlotPickerMain'
 /** Same customer id used when creating appointments (BookingFlowScreen) */
 const CURRENT_CUSTOMER_ID = 'placeholder-customer';
 
-/** Generate next N days as { label, value } for date chips */
+/** getDay() index → store key. Use only this for workingDays / workingHours lookups. */
+const WEEKDAY_MAP: Record<number, WorkingDayKey> = {
+  0: 'sunday',
+  1: 'monday',
+  2: 'tuesday',
+  3: 'wednesday',
+  4: 'thursday',
+  5: 'friday',
+  6: 'saturday',
+};
+
+/** Generate next N days as { label, value } for date chips. Value is local date (YYYY-MM-DD). */
 function getNextDays(count: number): { label: string; value: string }[] {
   const days: { label: string; value: string }[] = [];
   const dayNames = ['Pazar', 'Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi'];
@@ -28,14 +39,25 @@ function getNextDays(count: number): { label: string; value: string }[] {
   for (let i = 0; i < count; i++) {
     const d = new Date();
     d.setDate(d.getDate() + i);
-    const value = d.toISOString().split('T')[0];
-    const dayName = dayNames[d.getDay()];
+    const y = d.getFullYear();
+    const m = d.getMonth() + 1;
     const day = d.getDate();
+    const value = `${y}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const dayName = dayNames[d.getDay()];
     const label = i === 0 ? `Bugün (${day})` : `${dayName} (${day})`;
     days.push({ label, value });
   }
 
   return days;
+}
+
+/** True if the slot start time is before now. Uses localDate + setHours/setMinutes to avoid UTC string parsing. */
+function isSlotInPast(localDate: Date, timeSlot: string): boolean {
+  const [startTime] = timeSlot.split('-').map((s) => s.trim());
+  const [hour, min] = startTime.split(':').map(Number);
+  const slotDateTime = new Date(localDate.getTime());
+  slotDateTime.setHours(hour, min, 0, 0);
+  return slotDateTime.getTime() < Date.now();
 }
 
 export default function SlotPickerScreen() {
@@ -47,42 +69,101 @@ export default function SlotPickerScreen() {
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
 
   const appointments = useBookingStore((s) => s.appointments);
-  const bookedForDate = appointments.filter(
-    (a) => a.status === 'booked' && a.date === selectedDate
-  );
+  const selectedBarber = useBookingStore((s) => s.selectedBarber);
+  const hasAppointmentOnDate = useBookingStore((s) => s.hasAppointmentOnDate);
+  const cancelAppointmentInStore = useBookingStore((s) => s.cancelAppointment);
+  const barberProfile = useBarberStore((s) => s.profile);
+  const dayOffDates = useBarberStore((s) => s.dayOffDates);
+  /** Only booked appointments on selected date — used for conflict check and slot blocking. Cancelled are removed from store. */
+  const appointmentsOnSelectedDate = appointments.filter((a) => a.date === selectedDate);
+  const bookedForDate = appointmentsOnSelectedDate.filter((a) => a.status === 'booked');
+
+  /** Single local date from selectedDate (no UTC string parsing). Used for weekday and slot past check. */
+  const localDate = useMemo(() => {
+    const [year, month, day] = selectedDate.split('-').map(Number);
+    return new Date(year, month - 1, day, 0, 0, 0, 0);
+  }, [selectedDate]);
+
+  const weekdayKey = WEEKDAY_MAP[localDate.getDay()];
+  const isSameBarber = selectedBarber?.id === barberProfile.kuaforId;
+  const workingDays = isSameBarber ? barberProfile.workingDays : null;
+  const workingHoursMap = isSameBarber ? barberProfile.workingHours : null;
+  /** Step 1: workingDays[weekdayKey] — if false, do not generate slots or show booking. */
+  const barberWorksOnSelectedDay = workingDays ? workingDays[weekdayKey] : true;
+  /** Step 2: only after working day is true, get hours for this weekday. */
+  const dayHours = barberWorksOnSelectedDay ? workingHoursMap?.[weekdayKey] : null;
+  /** Hours are valid when both start and end are set and not the "unset" default 00:00–00:00. */
+  const hasValidHours =
+    dayHours &&
+    dayHours.start &&
+    dayHours.end &&
+    !(dayHours.start === '00:00' && dayHours.end === '00:00');
+
+  /** Date-based day off: when same barber and selectedDate is in barber's dayOffDates, no slots. */
+  const isDayOff =
+    isSameBarber && dayOffDates.includes(selectedDate);
 
   useEffect(() => {
     if (!selectedKuafor) return;
-    const available = generateAvailableSlots(selectedKuafor.id, selectedDate);
-    setSlots(available);
+    if (isSameBarber && dayOffDates.includes(selectedDate)) {
+      setSlots([]);
+      setSelectedSlot(null);
+      return;
+    }
+    if (barberWorksOnSelectedDay && hasValidHours && dayHours) {
+      const durationMinutes = dayHours.duration ?? 60;
+      setSlots(
+        generateSlotsFromWorkingHours(
+          dayHours.start,
+          dayHours.end,
+          durationMinutes,
+          dayHours.breakStart ?? null,
+          dayHours.breakEnd ?? null
+        )
+      );
+    } else {
+      setSlots(generateAvailableSlots(selectedKuafor.id, selectedDate));
+    }
     setSelectedSlot(null);
-  }, [selectedDate, selectedKuafor]);
+  }, [
+    selectedDate,
+    selectedKuafor,
+    isSameBarber,
+    dayOffDates,
+    barberWorksOnSelectedDay,
+    hasValidHours,
+    dayHours,
+  ]);
 
-  const getSlotStatus = (slot: string): 'available' | 'booked' | 'cancelled' => {
-    const appt = appointments.find(
-      (a) => a.timeSlot === slot && a.date === selectedDate && a.barberId === selectedKuafor?.id
+  /** Slot status from appointments array only. Do not disable for cancelled (removed from store) or past (handled by isSlotInPast). */
+  const getSlotStatus = (slot: string): 'available' | 'booked' | 'past' => {
+    if (isSlotInPast(localDate, slot)) return 'past';
+    const bookedAppt = appointmentsOnSelectedDate.find(
+      (a) =>
+        a.status === 'booked' &&
+        a.timeSlot === slot &&
+        a.barberId === selectedKuafor?.id
     );
-    if (appt?.status === 'booked') return 'booked';
-    if (appt?.status === 'cancelled') return 'cancelled';
+    if (bookedAppt) return 'booked';
     return 'available';
   };
 
-  /** Customer's booked appointment on selected date (any Kuaför) – at most one per day */
-  const existingBookedOnDate = appointments.find(
-    (a) =>
-      a.customerId === CURRENT_CUSTOMER_ID &&
-      a.date === selectedDate &&
-      a.status === 'booked'
-  );
+  /** Same day: only one appointment allowed. If customer has any booked appointment on selectedDate, block new booking. */
+  const hasExistingOnDate = hasAppointmentOnDate(selectedDate);
 
-  /** Same-day booking exists with a different Kuaför → show warning, hide slot picker */
-  const showOnePerDayWarning =
-    !!selectedKuafor &&
-    !!existingBookedOnDate &&
-    existingBookedOnDate.barberId !== selectedKuafor.id;
-
-  const handleSelectSlot = async (slot: string) => {
+  const handleSelectSlot = (slot: string) => {
     const status = getSlotStatus(slot);
+    if (status === 'past') {
+      return;
+    }
+
+    if (hasExistingOnDate) {
+      Alert.alert(
+        'Uyarı',
+        'Aynı gün içerisinde yalnızca 1 randevu oluşturabilirsiniz. Önce mevcut randevunuzu iptal etmelisiniz.'
+      );
+      return;
+    }
 
     if (status === 'booked') {
       const appt = appointments.find(
@@ -96,9 +177,9 @@ export default function SlotPickerScreen() {
           {
             text: 'İptal Et',
             style: 'destructive',
-            onPress: async () => {
+            onPress: () => {
               if (appt) {
-                await cancelAppointment(appt.id);
+                cancelAppointmentInStore(appt.id);
                 setSelectedSlot(null);
               }
             },
@@ -124,29 +205,31 @@ export default function SlotPickerScreen() {
 
   const renderSlot = ({ item }: { item: string }) => {
     const status = getSlotStatus(item);
+    const isDisabled = status === 'past';
 
     return (
       <TouchableOpacity
         style={[
           styles.slotButton,
           status === 'booked' && styles.slotButtonBooked,
-          status === 'cancelled' && styles.slotButtonCancelled,
+          status === 'past' && styles.slotButtonPast,
           selectedSlot === item && status === 'available' && styles.slotButtonSelected,
         ]}
         onPress={() => handleSelectSlot(item)}
+        disabled={isDisabled}
       >
         <Text
           style={[
             styles.slotText,
             status === 'booked' && styles.slotTextBooked,
-            status === 'cancelled' && styles.slotTextCancelled,
+            status === 'past' && styles.slotTextPast,
             selectedSlot === item && status === 'available' && styles.slotTextSelected,
           ]}
         >
           {item}
         </Text>
         {status === 'booked' && <Text style={styles.statusLabel}>Rezerve</Text>}
-        {status === 'cancelled' && <Text style={styles.statusLabelCancelled}>İptal</Text>}
+        {status === 'past' && <Text style={styles.statusLabelPast}>Geçti</Text>}
       </TouchableOpacity>
     );
   };
@@ -154,65 +237,98 @@ export default function SlotPickerScreen() {
   /* ─── No kuaför selected: show warning ─── */
   if (!selectedKuafor) {
     return (
-      <View style={styles.container}>
-        <View style={styles.warningContainer}>
-          <Text style={styles.warningIcon}>⚠</Text>
-          <Text style={styles.warningText}>
-            Lütfen anasayfadan bir Kuaför seçiniz.
-          </Text>
+      <SafeAreaView edges={['top']} style={{ flex: 1 }}>
+        <View style={styles.container}>
+          <View style={styles.warningContainer}>
+            <Text style={styles.warningIcon}>⚠</Text>
+            <Text style={styles.warningText}>
+              Lütfen anasayfadan bir Kuaför seçiniz.
+            </Text>
+          </View>
         </View>
-      </View>
+      </SafeAreaView>
     );
   }
 
   /* ─── Kuaför selected: full booking UI ─── */
   return (
-    <View style={styles.container}>
-      {/* Kuaför header */}
-      <View style={styles.headerRow}>
-        <Text style={styles.headerTitle} numberOfLines={1}>
-          {selectedKuafor.name} için randevu oluştur
-        </Text>
-      </View>
-
-      {/* Date picker */}
-      <Text style={styles.subtitle}>Tarih seçin:</Text>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.dateRow}
-      >
-        {dateOptions.map((d) => (
-          <TouchableOpacity
-            key={d.value}
-            style={[styles.dateChip, selectedDate === d.value && styles.dateChipActive]}
-            onPress={() => setSelectedDate(d.value)}
-          >
+    <SafeAreaView edges={['top']} style={{ flex: 1 }}>
+      <View style={styles.container}>
+        <View style={styles.headerSection}>
+          {/* Kuaför header */}
+          <View style={styles.headerRow}>
             <Text
-              style={[
-                styles.dateChipText,
-                selectedDate === d.value && styles.dateChipTextActive,
-              ]}
+              style={styles.headerTitle}
+              numberOfLines={1}
+              ellipsizeMode="tail"
             >
-              {d.label}
+              {selectedKuafor.name} için randevu oluştur
             </Text>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
+          </View>
 
-      {/* Selected date info */}
-      <View style={styles.dateInfoRow}>
-        <Text style={styles.dateInfoLabel}>Seçili tarih:</Text>
-        <Text style={styles.dateInfoValue}>{selectedDate}</Text>
-      </View>
+          {/* Date picker */}
+          <Text style={styles.subtitle}>Tarih seçin:</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.dateRow}
+            style={styles.dateChipsScroll}
+          >
+            {dateOptions.map((d) => (
+              <TouchableOpacity
+                key={d.value}
+                style={[styles.dateChip, selectedDate === d.value && styles.dateChipActive]}
+                onPress={() => setSelectedDate(d.value)}
+              >
+                <Text
+                  style={[
+                    styles.dateChipText,
+                    selectedDate === d.value && styles.dateChipTextActive,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {d.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
 
-      {/* Single appointment per day: hide slots when customer has booking with another Kuaför on this date */}
-      {showOnePerDayWarning ? (
+          {/* Selected date info */}
+          <View style={styles.dateInfoRow}>
+            <Text style={styles.dateInfoLabel}>Seçili tarih:</Text>
+            <Text style={styles.dateInfoValue}>{selectedDate}</Text>
+          </View>
+        </View>
+
+        <View style={styles.slotsSection}>
+      {/* Step 0: date-based day off → no slots, no booking */}
+      {isDayOff ? (
         <View style={styles.onePerDayWarningBox}>
           <Text style={styles.onePerDayWarningIcon}>⚠</Text>
           <Text style={styles.onePerDayWarningText}>
-            Bu gün zaten bir randevunuz var: {existingBookedOnDate?.barberName ?? 'Kuaför'}. Önce
-            mevcut randevunuzu iptal edip sonra başka bir kuaförden randevu seçebilirsiniz.
+            Kuaför bu tarihte izinlidir.
+          </Text>
+        </View>
+      ) : !barberWorksOnSelectedDay ? (
+        <View style={styles.onePerDayWarningBox}>
+          <Text style={styles.onePerDayWarningIcon}>⚠</Text>
+          <Text style={styles.onePerDayWarningText}>
+            Seçtiğiniz gün için kuaför çalışmamaktadır.
+          </Text>
+        </View>
+      ) : !hasValidHours ? (
+        <View style={styles.onePerDayWarningBox}>
+          <Text style={styles.onePerDayWarningIcon}>⚠</Text>
+          <Text style={styles.onePerDayWarningText}>
+            Kuaför bu gün için çalışma saatlerini ayarlamamıştır.
+          </Text>
+        </View>
+      ) : hasExistingOnDate ? (
+        <View style={styles.onePerDayWarningBox}>
+          <Text style={styles.onePerDayWarningIcon}>⚠</Text>
+          <Text style={styles.onePerDayWarningText}>
+            Aynı gün içerisinde yalnızca 1 randevu oluşturabilirsiniz. Önce mevcut randevunuzu
+            iptal etmelisiniz.
           </Text>
         </View>
       ) : (
@@ -222,6 +338,7 @@ export default function SlotPickerScreen() {
             data={slots}
             numColumns={2}
             keyExtractor={(item) => item}
+            style={styles.slotList}
             contentContainerStyle={styles.grid}
             columnWrapperStyle={styles.row}
             renderItem={renderSlot}
@@ -229,7 +346,9 @@ export default function SlotPickerScreen() {
           />
         </>
       )}
-    </View>
+        </View>
+      </View>
+    </SafeAreaView>
   );
 }
 
@@ -238,7 +357,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#FFFFFF',
     paddingHorizontal: 20,
-    paddingTop: 16,
   },
   /* ── warning (no kuaför) ── */
   warningContainer: {
@@ -258,7 +376,10 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 24,
   },
-  /* ── header ── */
+  /* ── header: küçülmez, gün chipleri hep okunaklı ── */
+  headerSection: {
+    flexShrink: 0,
+  },
   headerRow: {
     marginBottom: 12,
     paddingVertical: 10,
@@ -272,6 +393,10 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: '#1D4ED8',
+  },
+  dateChipsScroll: {
+    flexGrow: 0,
+    flexShrink: 0,
   },
   /* ── rest ── */
   subtitle: {
@@ -291,6 +416,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#D1D5DB',
     backgroundColor: '#F9FAFB',
+    minWidth: 90,
   },
   dateChipActive: {
     borderColor: '#2563EB',
@@ -304,6 +430,12 @@ const styles = StyleSheet.create({
   dateChipTextActive: {
     color: '#2563EB',
     fontWeight: '700',
+  },
+  slotsSection: {
+    flex: 1,
+  },
+  slotList: {
+    flex: 1,
   },
   dateInfoRow: {
     flexDirection: 'row',
@@ -349,9 +481,10 @@ const styles = StyleSheet.create({
     borderColor: '#16A34A',
     backgroundColor: '#F0FDF4',
   },
-  slotButtonCancelled: {
+  slotButtonPast: {
     borderColor: '#9CA3AF',
     backgroundColor: '#F3F4F6',
+    opacity: 0.8,
   },
   slotText: {
     fontSize: 14,
@@ -364,7 +497,7 @@ const styles = StyleSheet.create({
   slotTextBooked: {
     color: '#16A34A',
   },
-  slotTextCancelled: {
+  slotTextPast: {
     color: '#9CA3AF',
     textDecorationLine: 'line-through',
   },
@@ -374,7 +507,7 @@ const styles = StyleSheet.create({
     color: '#16A34A',
     marginTop: 2,
   },
-  statusLabelCancelled: {
+  statusLabelPast: {
     fontSize: 10,
     fontWeight: '500',
     color: '#9CA3AF',

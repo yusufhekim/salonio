@@ -8,7 +8,6 @@ import {
   Alert,
 } from 'react-native';
 import { useBookingStore } from '@store';
-import { cancelAppointment } from '../services';
 import type { Appointment } from '@domain/appointment';
 
 const STATUS_MAP: Record<Appointment['status'], { label: string; color: string }> = {
@@ -29,7 +28,7 @@ export default function MyAppointmentsScreen() {
         {
           text: 'İptal Et',
           style: 'destructive',
-          onPress: () => cancelAppointment(appointmentId),
+          onPress: () => useBookingStore.getState().cancelAppointment(appointmentId),
         },
       ]
     );

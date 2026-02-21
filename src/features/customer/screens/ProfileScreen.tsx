@@ -1,4 +1,5 @@
-import React, { useState, useCallback } from 'react';
+import { signOut } from 'firebase/auth';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -9,15 +10,30 @@ import {
   Alert,
   Modal,
   FlatList,
+  ActivityIndicator,
+  type LayoutChangeEvent,
 } from 'react-native';
 import { Formik } from 'formik';
 import * as Yup from 'yup';
-import { useAuthStore, useCustomerStore } from '@store';
+import { useCustomerStore } from '@store';
+import { useAuth } from '../../../context/AuthContext';
+import { auth } from '../../../lib/firebase';
+import { getUserProfile } from '../../../services/authService';
 import {
   getIller,
   getIlceler,
   getMahalleler,
 } from '../../../shared/constants/locationData';
+
+/** Sırayla ilk hatalı alana scroll için kullanılır. */
+const CUSTOMER_FIELD_ORDER = [
+  'adSoyad',
+  'il',
+  'ilce',
+  'mahalle',
+  'telefon',
+  'email',
+] as const;
 
 /* ─── validation schema ─── */
 const ProfileSchema = Yup.object().shape({
@@ -121,19 +137,43 @@ function DropdownField({
 
 /* ─── main screen ─── */
 export default function ProfileScreen() {
-  const logout = useAuthStore((s) => s.logout);
-  const profile = useCustomerStore((s) => s.profile);
+  const { user } = useAuth();
+  const storeProfile = useCustomerStore((s) => s.profile);
   const updateProfile = useCustomerStore((s) => s.updateProfile);
+  const [profile, setProfile] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
+  const scrollViewRef = useRef<ScrollView>(null);
+  const fieldYRef = useRef<Record<string, number>>({});
+  const submitAttemptedRef = useRef(false);
+
+  useEffect(() => {
+    const uid = user?.uid;
+    if (uid) {
+      getUserProfile(uid)
+        .then((data) => {
+          setProfile(data);
+        })
+        .finally(() => {
+          setLoading(false);
+        });
+    } else {
+      setLoading(false);
+    }
+  }, [user?.uid]);
+
+  const saveFieldY = useCallback((fieldName: string) => (e: LayoutChangeEvent) => {
+    fieldYRef.current[fieldName] = e.nativeEvent.layout.y;
+  }, []);
 
   const initialValues = {
-    adSoyad: profile.adSoyad,
-    il: profile.il,
-    ilce: profile.ilce,
-    mahalle: profile.mahalle,
-    adres: profile.adres,
-    telefon: profile.telefon,
-    email: profile.email,
+    adSoyad: profile?.fullName ?? storeProfile.adSoyad,
+    il: profile?.city ?? storeProfile.il,
+    ilce: profile?.district ?? storeProfile.ilce,
+    mahalle: profile?.neighborhood ?? storeProfile.mahalle,
+    adres: profile?.address ?? storeProfile.adres,
+    telefon: profile?.telefon ?? storeProfile.telefon,
+    email: profile?.email ?? user?.email ?? storeProfile.email,
   };
 
   const handleSave = useCallback(
@@ -156,6 +196,14 @@ export default function ProfileScreen() {
       </View>
     </View>
   );
+
+  if (loading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#2563EB" />
+      </View>
+    );
+  }
 
   return (
     <Formik
@@ -186,27 +234,63 @@ export default function ProfileScreen() {
           setFieldValue('mahalle', '');
         };
 
+        useEffect(() => {
+          if (!submitAttemptedRef.current || Object.keys(errors).length === 0) return;
+          const firstKey = CUSTOMER_FIELD_ORDER.find((k) => errors[k]);
+          if (!firstKey) return;
+          const y = fieldYRef.current[firstKey];
+          const scrollRef = scrollViewRef.current;
+          if (scrollRef != null && typeof y === 'number') {
+            scrollRef.scrollTo({ y: Math.max(0, y - 40), animated: true });
+          }
+          submitAttemptedRef.current = false;
+        }, [errors]);
+
         return (
           <ScrollView
+            ref={scrollViewRef}
             style={styles.scroll}
             contentContainerStyle={styles.container}
             keyboardShouldPersistTaps="handled"
           >
             <Text style={styles.title}>Profilim</Text>
 
-            {/* ── Müşteri ID (always read-only) ── */}
-            <View style={styles.fieldWrap}>
-              <Text style={styles.fieldLabel}>Müşteri ID</Text>
-              <View style={styles.idBox}>
-                <Text style={styles.idText}>{profile.musteriId}</Text>
-              </View>
-            </View>
+            {/* ── READ-ONLY: Firestore profile by role ── */}
+            {!editing && profile && (
+              <>
+                {profile.role === 'barber' && (
+                  <ReadOnlyRow
+                    label="Kuaför / Salon Adı"
+                    value={profile.barberShopName ?? ''}
+                  />
+                )}
+                <ReadOnlyRow label="Ad Soyad" value={profile.fullName ?? ''} />
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionTitle}>Adres Bilgileri</Text>
+                </View>
+                <ReadOnlyRow label="İl" value={profile.city ?? ''} />
+                <ReadOnlyRow label="İlçe" value={profile.district ?? ''} />
+                <ReadOnlyRow label="Mahalle" value={profile.neighborhood ?? ''} />
+                <ReadOnlyRow label="Adres" value={profile.address ?? ''} />
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionTitle}>İletişim Bilgileri</Text>
+                </View>
+                <ReadOnlyRow label="Telefon" value={profile.telefon ?? ''} />
+                <ReadOnlyRow label="E-posta" value={profile.email ?? ''} />
 
-            {/* ── READ-ONLY MODE ── */}
-            {!editing && (
+                <TouchableOpacity
+                  style={styles.editButton}
+                  onPress={() => setEditing(true)}
+                >
+                  <Text style={styles.editButtonText}>Düzenle</Text>
+                </TouchableOpacity>
+              </>
+            )}
+
+            {/* ── READ-ONLY MODE (fallback when no Firestore profile) ── */}
+            {!editing && !profile && (
               <>
                 <ReadOnlyRow label="Ad Soyad" value={values.adSoyad} />
-
                 <View style={styles.sectionHeader}>
                   <Text style={styles.sectionTitle}>Adres Bilgileri</Text>
                 </View>
@@ -214,13 +298,11 @@ export default function ProfileScreen() {
                 <ReadOnlyRow label="İlçe" value={values.ilce} />
                 <ReadOnlyRow label="Mahalle" value={values.mahalle} />
                 <ReadOnlyRow label="Adres Satırı" value={values.adres} />
-
                 <View style={styles.sectionHeader}>
                   <Text style={styles.sectionTitle}>İletişim Bilgileri</Text>
                 </View>
                 <ReadOnlyRow label="Telefon" value={values.telefon} />
                 <ReadOnlyRow label="E-posta" value={values.email} />
-
                 <TouchableOpacity
                   style={styles.editButton}
                   onPress={() => setEditing(true)}
@@ -234,7 +316,10 @@ export default function ProfileScreen() {
             {editing && (
               <>
                 {/* Ad Soyad */}
-                <View style={styles.fieldWrap}>
+                <View
+                  style={styles.fieldWrap}
+                  onLayout={saveFieldY('adSoyad')}
+                >
                   <Text style={styles.fieldLabel}>Ad Soyad</Text>
                   <TextInput
                     style={[
@@ -257,7 +342,8 @@ export default function ProfileScreen() {
                   <Text style={styles.sectionTitle}>Adres Bilgileri</Text>
                 </View>
 
-                <DropdownField
+                <View onLayout={saveFieldY('il')}>
+                  <DropdownField
                   label="İl"
                   value={values.il}
                   options={getIller()}
@@ -269,8 +355,10 @@ export default function ProfileScreen() {
                   error={errors.il}
                   touched={touched.il}
                 />
+                </View>
 
-                <DropdownField
+                <View onLayout={saveFieldY('ilce')}>
+                  <DropdownField
                   label="İlçe"
                   value={values.ilce}
                   options={getIlceler(values.il)}
@@ -283,8 +371,10 @@ export default function ProfileScreen() {
                   error={errors.ilce}
                   touched={touched.ilce}
                 />
+                </View>
 
-                <DropdownField
+                <View onLayout={saveFieldY('mahalle')}>
+                  <DropdownField
                   label="Mahalle"
                   value={values.mahalle}
                   options={getMahalleler(values.il, values.ilce)}
@@ -297,6 +387,7 @@ export default function ProfileScreen() {
                   error={errors.mahalle}
                   touched={touched.mahalle}
                 />
+                </View>
 
                 {/* Adres satırı (optional) */}
                 <View style={styles.fieldWrap}>
@@ -319,7 +410,10 @@ export default function ProfileScreen() {
                 </View>
 
                 {/* Telefon */}
-                <View style={styles.fieldWrap}>
+                <View
+                  style={styles.fieldWrap}
+                  onLayout={saveFieldY('telefon')}
+                >
                   <Text style={styles.fieldLabel}>Telefon</Text>
                   <TextInput
                     style={[
@@ -339,7 +433,10 @@ export default function ProfileScreen() {
                 </View>
 
                 {/* Email */}
-                <View style={styles.fieldWrap}>
+                <View
+                  style={styles.fieldWrap}
+                  onLayout={saveFieldY('email')}
+                >
                   <Text style={styles.fieldLabel}>E-posta</Text>
                   <TextInput
                     style={[
@@ -362,7 +459,10 @@ export default function ProfileScreen() {
                 {/* Save */}
                 <TouchableOpacity
                   style={styles.saveButton}
-                  onPress={() => handleSubmit()}
+                  onPress={() => {
+                    submitAttemptedRef.current = true;
+                    handleSubmit();
+                  }}
                 >
                   <Text style={styles.saveButtonText}>Kaydet</Text>
                 </TouchableOpacity>
@@ -381,7 +481,12 @@ export default function ProfileScreen() {
             )}
 
             {/* Logout (always visible) */}
-            <TouchableOpacity style={styles.logoutButton} onPress={logout}>
+            <TouchableOpacity
+              style={styles.logoutButton}
+              onPress={async () => {
+                await signOut(auth);
+              }}
+            >
               <Text style={styles.logoutButtonText}>Çıkış Yap</Text>
             </TouchableOpacity>
           </ScrollView>
@@ -394,7 +499,18 @@ export default function ProfileScreen() {
 /* ─── styles ─── */
 const styles = StyleSheet.create({
   scroll: { flex: 1, backgroundColor: '#FFFFFF' },
-  container: { paddingHorizontal: 24, paddingTop: 20, paddingBottom: 40 },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+  },
+  container: {
+    paddingHorizontal: 24,
+    paddingTop: 20,
+    paddingBottom: 40,
+    flexGrow: 0,
+  },
   title: { fontSize: 24, fontWeight: '700', color: '#111827', marginBottom: 16 },
 
   /* sections */
