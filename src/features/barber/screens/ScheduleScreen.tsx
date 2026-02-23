@@ -1,5 +1,5 @@
 import { useBarberStore, useBookingStore, type WorkingDayKey } from "@store";
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   FlatList,
@@ -8,8 +8,15 @@ import {
   Text,
   TouchableOpacity,
   View,
+  ActivityIndicator,
 } from "react-native";
 import { generateSlotsFromWorkingHours } from "../../availability/services";
+import { useAuth } from "../../../context/AuthContext";
+import { getUserProfile } from "../../../services/authService";
+import {
+  getAppointmentsByBarber,
+  cancelAppointmentInFirestore,
+} from "../../../services/appointmentService";
 
 /** getDay() index → store key. */
 const WEEKDAY_MAP: Record<number, WorkingDayKey> = {
@@ -59,6 +66,10 @@ function getTodayString(): string {
 }
 
 export default function ScheduleScreen() {
+  const { user } = useAuth();
+  const setScheduleFromFirestore = useBarberStore(
+    (s) => s.setScheduleFromFirestore
+  );
   const dateOptions = useMemo(() => getNextDays(7), []);
   const [selectedDate, setSelectedDate] = useState(getTodayString);
 
@@ -67,6 +78,35 @@ export default function ScheduleScreen() {
   const workingHours = profile.workingHours;
   const dayOffDates = useBarberStore((s) => s.dayOffDates);
   const appointments = useBookingStore((s) => s.appointments);
+  const setAppointments = useBookingStore((s) => s.setAppointments);
+  const [appointmentsLoading, setAppointmentsLoading] = useState(true);
+
+  /** Hydrate barber store from Firestore when Takvim opens (so data is current even if Profil was not opened first). */
+  useEffect(() => {
+    const uid = user?.uid;
+    if (!uid) return;
+    getUserProfile(uid).then((data) => {
+      if (data) {
+        setScheduleFromFirestore({
+          workingDays: data.workingDays,
+          workingHours: data.workingHours,
+          dayOffDates: data.dayOffDates,
+        });
+      }
+    });
+  }, [user?.uid, setScheduleFromFirestore]);
+
+  /** Load barber's appointments from Firestore. */
+  useEffect(() => {
+    const uid = user?.uid;
+    if (!uid) {
+      setAppointmentsLoading(false);
+      return;
+    }
+    getAppointmentsByBarber(uid)
+      .then(setAppointments)
+      .finally(() => setAppointmentsLoading(false));
+  }, [user?.uid, setAppointments]);
 
   /** Local date from selectedDate (no UTC). */
   const localDate = useMemo(() => {
@@ -107,13 +147,21 @@ export default function ScheduleScreen() {
   ]);
 
   const getSlotInfo = (slot: string) => {
-    const appt = appointments.find(
-      (a) => a.timeSlot === slot && a.date === selectedDate
+    const booked = appointments.find(
+      (a) =>
+        a.timeSlot === slot &&
+        a.date === selectedDate &&
+        a.status === "booked"
     );
-    if (appt?.status === "booked")
-      return { status: "booked" as const, appointment: appt };
-    if (appt?.status === "cancelled")
-      return { status: "cancelled" as const, appointment: appt };
+    if (booked) return { status: "booked" as const, appointment: booked };
+    const cancelled = appointments.find(
+      (a) =>
+        a.timeSlot === slot &&
+        a.date === selectedDate &&
+        a.status === "cancelled"
+    );
+    if (cancelled)
+      return { status: "cancelled" as const, appointment: cancelled };
     return { status: "empty" as const, appointment: null };
   };
 
@@ -129,9 +177,19 @@ export default function ScheduleScreen() {
           {
             text: "İptal Et",
             style: "destructive",
-            onPress: () => {
-              useBookingStore.getState().cancelAppointment(info.appointment!.id);
-              Alert.alert("Bilgi", "Randevu iptal edildi.");
+            onPress: async () => {
+              const appt = info.appointment!;
+              try {
+                await cancelAppointmentInFirestore(appt.id);
+                const uid = user?.uid;
+                if (uid) {
+                  const list = await getAppointmentsByBarber(uid);
+                  setAppointments(list);
+                }
+                Alert.alert("Bilgi", "Randevu iptal edildi.");
+              } catch (_e) {
+                Alert.alert("Hata", "Randevu iptal edilemedi.");
+              }
             },
           },
         ]
@@ -154,38 +212,39 @@ export default function ScheduleScreen() {
 
   const renderSlot = ({ item }: { item: string }) => {
     const info = getSlotInfo(item);
+    const isCancelled = info.status === "cancelled";
+    const isBooked = info.status === "booked";
 
     return (
       <TouchableOpacity
         style={[
           styles.slotCard,
-          info.status === "booked" && styles.slotBooked,
-          info.status === "cancelled" && styles.slotCancelled,
+          isBooked && styles.slotBooked,
+          isCancelled && styles.slotCancelledAsAvailable,
         ]}
         onPress={() => handleSlotPress(item)}
       >
         <Text
           style={[
             styles.slotTime,
-            info.status === "booked" && styles.slotTimeBooked,
-            info.status === "cancelled" && styles.slotTimeCancelled,
+            isBooked && styles.slotTimeBooked,
           ]}
         >
           {item}
         </Text>
-        <Text
-          style={[
-            styles.slotStatus,
-            info.status === "booked" && styles.slotStatusBooked,
-            info.status === "cancelled" && styles.slotStatusCancelled,
-          ]}
-        >
-          {info.status === "booked"
-            ? "Dolu"
-            : info.status === "cancelled"
-              ? "İptal"
-              : "Müsait"}
-        </Text>
+        <View style={styles.slotStatusWrap}>
+          <Text
+            style={[
+              styles.slotStatus,
+              isBooked && styles.slotStatusBooked,
+            ]}
+          >
+            {isBooked ? "Dolu" : "Müsait"}
+          </Text>
+          {isCancelled && (
+            <Text style={styles.slotCancelledNote}>İptal edildi</Text>
+          )}
+        </View>
       </TouchableOpacity>
     );
   };
@@ -198,6 +257,24 @@ export default function ScheduleScreen() {
     : !barberWorksOnDay
       ? "Bu gün çalışmıyorsunuz."
       : null;
+
+  /** Seçilen günde mola var mı (Profil'de kaydedilen mola saatleri). */
+  const hasBreak =
+    dayHours?.breakStart &&
+    dayHours?.breakEnd &&
+    dayHours.breakStart !== dayHours.breakEnd;
+  const breakLabel = hasBreak
+    ? `Mola: ${dayHours!.breakStart} - ${dayHours!.breakEnd}`
+    : null;
+
+  if (appointmentsLoading) {
+    return (
+      <View style={[styles.container, styles.loadingWrap]}>
+        <ActivityIndicator size="large" color="#2563EB" />
+        <Text style={styles.loadingText}>Randevular yükleniyor...</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -254,7 +331,13 @@ export default function ScheduleScreen() {
           </View>
         </View>
       ) : (
-        <FlatList
+        <>
+          {breakLabel ? (
+            <View style={styles.breakBox}>
+              <Text style={styles.breakLabel}>{breakLabel}</Text>
+            </View>
+          ) : null}
+          <FlatList
           data={allSlots}
           keyExtractor={(item) => item}
           style={styles.slotList}
@@ -262,6 +345,7 @@ export default function ScheduleScreen() {
           renderItem={renderSlot}
           extraData={appointments}
         />
+        </>
       )}
     </View>
   );
@@ -273,6 +357,15 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
     paddingHorizontal: 20,
     paddingTop: 20,
+  },
+  loadingWrap: {
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  loadingText: {
+    fontSize: 14,
+    color: "#6B7280",
+    marginTop: 12,
   },
   /** Üst bölüm: küçülmez, gün chipleri hep okunaklı kalır. */
   headerSection: {
@@ -327,6 +420,20 @@ const styles = StyleSheet.create({
   },
   emptyMessageWrap: {
     flex: 1,
+  },
+  breakBox: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginBottom: 12,
+    backgroundColor: "#FEF3C7",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#F59E0B",
+  },
+  breakLabel: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#92400E",
   },
   date: {
     fontSize: 14,
@@ -395,6 +502,16 @@ const styles = StyleSheet.create({
   slotCancelled: {
     borderColor: "#9CA3AF",
     backgroundColor: "#F3F4F6",
+  },
+  slotCancelledAsAvailable: {},
+  slotStatusWrap: {
+    alignItems: "flex-end",
+  },
+  slotCancelledNote: {
+    fontSize: 10,
+    color: "#9CA3AF",
+    marginTop: 2,
+    fontStyle: "italic",
   },
   slotTime: {
     fontSize: 16,

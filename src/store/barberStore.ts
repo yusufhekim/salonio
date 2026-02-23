@@ -20,7 +20,7 @@ export interface WorkingHoursMap {
   sunday: DayWorkingHours;
 }
 
-const DEFAULT_WORKING_HOURS: WorkingHoursMap = {
+export const DEFAULT_WORKING_HOURS: WorkingHoursMap = {
   monday: { start: '09:00', end: '18:00', duration: 60, breakStart: null, breakEnd: null },
   tuesday: { start: '09:00', end: '18:00', duration: 60, breakStart: null, breakEnd: null },
   wednesday: { start: '09:00', end: '18:00', duration: 60, breakStart: null, breakEnd: null },
@@ -63,7 +63,7 @@ export interface WorkingDays {
   sunday: boolean;
 }
 
-const DEFAULT_WORKING_DAYS: WorkingDays = {
+export const DEFAULT_WORKING_DAYS: WorkingDays = {
   monday: true,
   tuesday: true,
   wednesday: true,
@@ -88,6 +88,11 @@ interface BarberState {
   ) => void;
   addDayOff: (date: string) => void;
   removeDayOff: (date: string) => void;
+  setScheduleFromFirestore: (data: {
+    workingDays?: WorkingDays;
+    workingHours?: WorkingHoursMap;
+    dayOffDates?: string[];
+  } | null) => void;
   resetProfile: () => void;
 }
 
@@ -175,6 +180,30 @@ export const useBarberStore = create<BarberState>((set) => ({
     set((state) => ({
       dayOffDates: state.dayOffDates.filter((d) => d !== date),
     })),
+
+  setScheduleFromFirestore: (data) =>
+    set((state) => {
+      if (!data) return state;
+      const workingDays =
+        data.workingDays != null
+          ? { ...DEFAULT_WORKING_DAYS, ...data.workingDays }
+          : { ...DEFAULT_WORKING_DAYS };
+      const workingHours =
+        data.workingHours != null
+          ? { ...DEFAULT_WORKING_HOURS, ...data.workingHours }
+          : { ...DEFAULT_WORKING_HOURS };
+      const dayOffDates = Array.isArray(data.dayOffDates)
+        ? data.dayOffDates
+        : [];
+      return {
+        profile: {
+          ...state.profile,
+          workingDays,
+          workingHours,
+        },
+        dayOffDates,
+      };
+    }),
 
   resetProfile: () =>
     set({

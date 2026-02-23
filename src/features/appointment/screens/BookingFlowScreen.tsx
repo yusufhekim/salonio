@@ -1,16 +1,19 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { scheduleNotification } from '../../notification/services';
 import { useBookingStore, useNotificationStore } from '@store';
+import { useAuth } from '../../../context/AuthContext';
+import { createAppointment } from '../../../services/appointmentService';
 import type { Appointment } from '@domain/appointment';
 import type { BookingStackParamList } from '../../customer/navigation/CustomerNavigator';
 
@@ -20,11 +23,13 @@ type BookingFlowNav = NativeStackNavigationProp<BookingStackParamList, 'BookingF
 export default function BookingFlowScreen() {
   const route = useRoute<BookingFlowRoute>();
   const navigation = useNavigation<BookingFlowNav>();
+  const { user } = useAuth();
   const { slot, date, barberId, kuaforName } = route.params;
 
   const addAppointment = useBookingStore((s) => s.addAppointment);
   const hasAppointmentOnDate = useBookingStore((s) => s.hasAppointmentOnDate);
   const addNotification = useNotificationStore((s) => s.addNotification);
+  const [confirming, setConfirming] = useState(false);
 
   const handleConfirm = async () => {
     if (hasAppointmentOnDate(date)) {
@@ -35,37 +40,59 @@ export default function BookingFlowScreen() {
       return;
     }
 
-    const newAppointment: Appointment = {
-      id: Date.now().toString(),
-      customerId: 'placeholder-customer',
-      barberId,
-      barberName: kuaforName,
-      date,
-      timeSlot: slot,
-      status: 'booked',
-    };
+    const customerId = user?.uid;
+    if (!customerId) {
+      Alert.alert('Hata', 'Oturum bulunamadı. Lütfen tekrar giriş yapın.');
+      return;
+    }
 
-    addAppointment(newAppointment);
+    setConfirming(true);
+    try {
+      const id = await createAppointment({
+        customerId,
+        barberId,
+        barberName: kuaforName,
+        date,
+        timeSlot: slot,
+        status: 'booked',
+      });
 
-    // Schedule a local notification in 10 seconds
-    await scheduleNotification(
-      'Randevu Hatırlatma',
-      `${slot} randevunuz var.`,
-      10
-    );
+      const newAppointment: Appointment = {
+        id,
+        customerId,
+        barberId,
+        barberName: kuaforName,
+        date,
+        timeSlot: slot,
+        status: 'booked',
+      };
+      addAppointment(newAppointment);
 
-    addNotification('Randevu Hatırlatma', `${slot} randevunuz var.`);
+      await scheduleNotification(
+        'Randevu Hatırlatma',
+        `${slot} randevunuz var.`,
+        10
+      );
+      addNotification('Randevu Hatırlatma', `${slot} randevunuz var.`);
 
-    Alert.alert(
-      'Randevu Onaylandı!',
-      `${slot} saati için randevunuz başarıyla oluşturuldu.\n10 saniye sonra hatırlatma alacaksınız.`,
-      [
-        {
-          text: 'Tamam',
-          onPress: () => navigation.goBack(),
-        },
-      ]
-    );
+      Alert.alert(
+        'Randevu Onaylandı!',
+        `${slot} saati için randevunuz başarıyla oluşturuldu.\n10 saniye sonra hatırlatma alacaksınız.`,
+        [
+          {
+            text: 'Tamam',
+            onPress: () => navigation.goBack(),
+          },
+        ]
+      );
+    } catch (_e) {
+      Alert.alert(
+        'Hata',
+        'Randevu kaydedilemedi. Lütfen tekrar deneyin.'
+      );
+    } finally {
+      setConfirming(false);
+    }
   };
 
   return (
@@ -94,8 +121,16 @@ export default function BookingFlowScreen() {
         </View>
       </View>
 
-      <TouchableOpacity style={styles.confirmButton} onPress={handleConfirm}>
-        <Text style={styles.confirmText}>Randevuyu Onayla</Text>
+      <TouchableOpacity
+        style={styles.confirmButton}
+        onPress={handleConfirm}
+        disabled={confirming}
+      >
+        {confirming ? (
+          <ActivityIndicator size="small" color="#FFFFFF" />
+        ) : (
+          <Text style={styles.confirmText}>Randevuyu Onayla</Text>
+        )}
       </TouchableOpacity>
 
       <TouchableOpacity

@@ -19,6 +19,7 @@ import { useCustomerStore } from '@store';
 import { useAuth } from '../../../context/AuthContext';
 import { auth } from '../../../lib/firebase';
 import { getUserProfile } from '../../../services/authService';
+import { updateCustomerProfile } from '../../../services/userService';
 import {
   getIller,
   getIlceler,
@@ -177,12 +178,35 @@ export default function ProfileScreen() {
   };
 
   const handleSave = useCallback(
-    (values: typeof initialValues) => {
-      updateProfile(values);
-      Alert.alert('Başarılı', 'Bilgiler başarıyla güncellendi!');
-      setEditing(false);
+    async (values: typeof initialValues) => {
+      const uid = user?.uid;
+      if (!uid) {
+        Alert.alert('Hata', 'Oturum bulunamadı. Lütfen tekrar giriş yapın.');
+        return;
+      }
+      try {
+        await updateCustomerProfile(uid, {
+          fullName: values.adSoyad,
+          city: values.il,
+          district: values.ilce,
+          neighborhood: values.mahalle,
+          address: values.adres ?? '',
+          email: values.email,
+          telefon: values.telefon,
+        });
+        updateProfile(values);
+        const updated = await getUserProfile(uid);
+        setProfile(updated);
+        Alert.alert('Başarılı', 'Bilgiler başarıyla güncellendi!');
+        setEditing(false);
+      } catch (e) {
+        Alert.alert(
+          'Kayıt hatası',
+          'Bilgiler veritabanına kaydedilemedi. Lütfen tekrar deneyin.'
+        );
+      }
     },
-    [updateProfile],
+    [user?.uid, updateProfile],
   );
 
   /* ─── read-only row helper ─── */

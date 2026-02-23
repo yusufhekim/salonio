@@ -20,6 +20,7 @@ import { useBarberStore, type WorkingDayKey } from '@store';
 import { useAuth } from '../../../context/AuthContext';
 import { auth } from '../../../lib/firebase';
 import { getUserProfile } from '../../../services/authService';
+import { updateBarberProfile, updateBarberSchedule } from '../../../services/userService';
 import {
   getIller,
   getIlceler,
@@ -230,7 +231,9 @@ export default function BarberProfileScreen() {
   const removeDayOff = useBarberStore((s) => s.removeDayOff);
   const setWorkingDay = useBarberStore((s) => s.setWorkingDay);
   const setWorkingHours = useBarberStore((s) => s.setWorkingHours);
+  const setScheduleFromFirestore = useBarberStore((s) => s.setScheduleFromFirestore);
   const [firestoreProfile, setFirestoreProfile] = useState<any>(null);
+  const [saveInProgress, setSaveInProgress] = useState(false);
   const [profileLoading, setProfileLoading] = useState(true);
   const [editing, setEditing] = useState(false);
   const [dayOffPickerVisible, setDayOffPickerVisible] = useState(false);
@@ -247,6 +250,13 @@ export default function BarberProfileScreen() {
       getUserProfile(uid)
         .then((data) => {
           setFirestoreProfile(data);
+          if (data) {
+            setScheduleFromFirestore({
+              workingDays: data.workingDays,
+              workingHours: data.workingHours,
+              dayOffDates: data.dayOffDates,
+            });
+          }
         })
         .finally(() => {
           setProfileLoading(false);
@@ -254,7 +264,7 @@ export default function BarberProfileScreen() {
     } else {
       setProfileLoading(false);
     }
-  }, [user?.uid]);
+  }, [user?.uid, setScheduleFromFirestore]);
 
   const saveFieldY = useCallback((fieldName: string) => (e: LayoutChangeEvent) => {
     fieldYRef.current[fieldName] = e.nativeEvent.layout.y;
@@ -272,12 +282,46 @@ export default function BarberProfileScreen() {
   };
 
   const handleSave = useCallback(
-    (values: typeof initialValues) => {
+    async (values: typeof initialValues) => {
       updateProfile(values);
-      Alert.alert('Başarılı', 'Bilgiler başarıyla güncellendi!');
-      setEditing(false);
+      const uid = user?.uid;
+      if (!uid) {
+        Alert.alert('Başarılı', 'Bilgiler başarıyla güncellendi!');
+        setEditing(false);
+        return;
+      }
+      setSaveInProgress(true);
+      try {
+        await updateBarberProfile(uid, {
+          barberShopName: values.kuaforAdi,
+          fullName: values.adSoyad,
+          city: values.il,
+          district: values.ilce,
+          neighborhood: values.mahalle,
+          address: values.adres ?? '',
+          email: values.email,
+          telefon: values.telefon,
+        });
+        const state = useBarberStore.getState();
+        await updateBarberSchedule(uid, {
+          workingDays: state.profile.workingDays,
+          workingHours: state.profile.workingHours,
+          dayOffDates: state.dayOffDates,
+        });
+        const updated = await getUserProfile(uid);
+        setFirestoreProfile(updated);
+        Alert.alert('Başarılı', 'Bilgiler başarıyla güncellendi!');
+        setEditing(false);
+      } catch (_err) {
+        Alert.alert(
+          'Hata',
+          'Bilgiler kaydedilirken bir hata oluştu. Lütfen tekrar deneyin.'
+        );
+      } finally {
+        setSaveInProgress(false);
+      }
     },
-    [updateProfile],
+    [updateProfile, user?.uid],
   );
 
   /* read-only row helper */
@@ -348,14 +392,6 @@ export default function BarberProfileScreen() {
             keyboardShouldPersistTaps="handled"
           >
             <Text style={styles.title}>Kuaför Profili</Text>
-
-            {/* ── Kuaför ID (always read-only) ── */}
-            <View style={styles.fieldWrap}>
-              <Text style={styles.fieldLabel}>Kuaför ID</Text>
-              <View style={styles.idBox}>
-                <Text style={styles.idText}>{profile.kuaforId}</Text>
-              </View>
-            </View>
 
             {/* ══ READ-ONLY MODE ══ */}
             {!editing && (
@@ -836,13 +872,19 @@ export default function BarberProfileScreen() {
 
                 {/* Save */}
                 <TouchableOpacity
-                  style={styles.saveButton}
+                  style={[styles.saveButton, saveInProgress && styles.buttonDisabled]}
                   onPress={() => {
+                    if (saveInProgress) return;
                     submitAttemptedRef.current = true;
                     handleSubmit();
                   }}
+                  disabled={saveInProgress}
                 >
-                  <Text style={styles.saveButtonText}>Kaydet</Text>
+                  {saveInProgress ? (
+                    <ActivityIndicator color="#FFFFFF" size="small" />
+                  ) : (
+                    <Text style={styles.saveButtonText}>Kaydet</Text>
+                  )}
                 </TouchableOpacity>
 
                 {/* Cancel editing */}
@@ -862,6 +904,7 @@ export default function BarberProfileScreen() {
             <TouchableOpacity
               style={styles.logoutButton}
               onPress={async () => {
+                useBarberStore.getState().resetProfile();
                 await signOut(auth);
               }}
             >
@@ -982,16 +1025,6 @@ const styles = StyleSheet.create({
   readOnlyText: { fontSize: 15, fontWeight: '500', color: '#111827' },
   readOnlyMuted: { fontSize: 15, color: '#9CA3AF', fontStyle: 'italic' },
 
-  idBox: {
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
-    borderRadius: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    backgroundColor: '#EFF6FF',
-  },
-  idText: { fontSize: 15, fontWeight: '700', color: '#2563EB' },
-
   dropdown: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1052,6 +1085,7 @@ const styles = StyleSheet.create({
     marginTop: 28,
   },
   saveButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
+  buttonDisabled: { opacity: 0.6 },
   cancelEditButton: {
     paddingVertical: 14,
     borderRadius: 10,

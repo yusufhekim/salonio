@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   Alert,
   Modal,
+  ActivityIndicator,
 } from 'react-native';
 import {
   getIller,
@@ -15,28 +16,18 @@ import {
   getMahalleler,
 } from '../../../shared/constants/locationData';
 import { useCustomerStore, useBookingStore } from '@store';
+import { useAuth } from '../../../context/AuthContext';
+import { getUserProfile } from '../../../services/authService';
+import { getRegisteredBarbers, updateCustomerProfile } from '../../../services/userService';
 
-/* ─── placeholder kuaför data ─── */
-interface PlaceholderKuafor {
+/* ─── kuaför list item (from Firestore registered barbers) ─── */
+export interface KuaforListItem {
   id: string;
   name: string;
   il: string;
   ilce: string;
   mahalle: string;
 }
-
-const PLACEHOLDER_KUAFORLER: PlaceholderKuafor[] = [
-  { id: '1', name: 'Ali Usta Kuaför', il: 'İstanbul', ilce: 'Kadıköy', mahalle: 'Caferağa' },
-  { id: '2', name: 'Mehmet Barber Shop', il: 'İstanbul', ilce: 'Beşiktaş', mahalle: 'Levent' },
-  { id: '3', name: 'Salon Güzellik', il: 'İstanbul', ilce: 'Üsküdar', mahalle: 'Çengelköy' },
-  { id: '4', name: 'Stil Kuaför', il: 'Ankara', ilce: 'Çankaya', mahalle: 'Kızılay' },
-  { id: '5', name: 'Modern Saç Tasarım', il: 'Ankara', ilce: 'Keçiören', mahalle: 'Etlik' },
-  { id: '6', name: 'Trend Kuaför', il: 'İzmir', ilce: 'Konak', mahalle: 'Alsancak' },
-  { id: '7', name: 'Prestij Kuaför', il: 'İstanbul', ilce: 'Kadıköy', mahalle: 'Moda' },
-  { id: '8', name: 'Elite Barber', il: 'İzmir', ilce: 'Bornova', mahalle: 'Erzene' },
-  { id: '9', name: 'Gold Kuaför', il: 'İstanbul', ilce: 'Şişli', mahalle: 'Mecidiyeköy' },
-  { id: '10', name: 'Star Kuaför', il: 'Ankara', ilce: 'Yenimahalle', mahalle: 'Batıkent' },
-];
 
 /* ─── dropdown picker (bottom-sheet modal) ─── */
 function FilterDropdown({
@@ -127,6 +118,9 @@ function FilterDropdown({
 
 /* ─── main screen ─── */
 export default function HomeScreen() {
+  const { user } = useAuth();
+  const [allKuaforler, setAllKuaforler] = useState<KuaforListItem[]>([]);
+  const [listLoading, setListLoading] = useState(true);
   const [nameFilter, setNameFilter] = useState('');
   const [selectedIl, setSelectedIl] = useState('');
   const [selectedIlce, setSelectedIlce] = useState('');
@@ -135,20 +129,96 @@ export default function HomeScreen() {
   const setSelectedKuaforStore = useCustomerStore((s) => s.setSelectedKuafor);
   const setSelectedBarber = useBookingStore((s) => s.setSelectedBarber);
 
-  const handleKuaforSelect = (kuafor: PlaceholderKuafor) => {
-    setSelectedKuaforStore({
+  useEffect(() => {
+    let cancelled = false;
+    setListLoading(true);
+    Promise.all([
+      user?.uid ? getUserProfile(user.uid) : Promise.resolve(null),
+      getRegisteredBarbers(),
+    ])
+      .then(([customerProfile, barbers]) => {
+        if (cancelled) return;
+        const list: KuaforListItem[] = barbers.map((b) => ({
+          id: b.id,
+          name: b.barberShopName || 'Kuaför',
+          il: b.city,
+          ilce: b.district,
+          mahalle: b.neighborhood,
+        }));
+        setAllKuaforler(list);
+        const profile = customerProfile as Record<string, unknown> | null;
+        const customerCity = (profile?.city as string) ?? '';
+        const customerDistrict = (profile?.district as string) ?? '';
+        if (customerCity) {
+          setSelectedIl(customerCity);
+          const sameIlIlce = list.filter(
+            (k) => k.il === customerCity && k.ilce === customerDistrict
+          );
+          if (sameIlIlce.length > 0) {
+            setSelectedIlce(customerDistrict);
+          } else {
+            setSelectedIlce('');
+          }
+        }
+        const savedBarberId = profile?.selectedBarberId as string | undefined;
+        const savedBarberName = profile?.selectedBarberName as string | undefined;
+        if (savedBarberId && savedBarberName) {
+          const savedIl = (profile?.selectedBarberCity as string) ?? '';
+          const savedIlce = (profile?.selectedBarberDistrict as string) ?? '';
+          const savedMahalle = (profile?.selectedBarberNeighborhood as string) ?? '';
+          setSelectedKuaforStore({
+            id: savedBarberId,
+            name: savedBarberName,
+            il: savedIl,
+            ilce: savedIlce,
+            mahalle: savedMahalle,
+          });
+          setSelectedBarber({ id: savedBarberId, name: savedBarberName });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setListLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.uid]);
+
+  const handleKuaforSelect = (kuafor: KuaforListItem) => {
+    const kuaforData = {
       id: kuafor.id,
       name: kuafor.name,
       il: kuafor.il,
       ilce: kuafor.ilce,
       mahalle: kuafor.mahalle,
-    });
+    };
+    setSelectedKuaforStore(kuaforData);
     setSelectedBarber({ id: kuafor.id, name: kuafor.name });
+    const uid = user?.uid;
+    if (uid) {
+      updateCustomerProfile(uid, {
+        selectedBarberId: kuafor.id,
+        selectedBarberName: kuafor.name,
+        selectedBarberCity: kuafor.il,
+        selectedBarberDistrict: kuafor.ilce,
+        selectedBarberNeighborhood: kuafor.mahalle,
+      }).catch(() => {});
+    }
   };
 
   const handleClearSelectedKuafor = () => {
     setSelectedKuaforStore(null);
     setSelectedBarber(null);
+    const uid = user?.uid;
+    if (uid) {
+      updateCustomerProfile(uid, {
+        selectedBarberId: '',
+        selectedBarberName: '',
+        selectedBarberCity: '',
+        selectedBarberDistrict: '',
+        selectedBarberNeighborhood: '',
+      }).catch(() => {});
+    }
   };
 
   /* cascade resets */
@@ -162,9 +232,9 @@ export default function HomeScreen() {
     setSelectedMahalle('');
   };
 
-  /* live filter */
+  /* live filter: search and filters over registered barbers */
   const filteredKuaforler = useMemo(() => {
-    return PLACEHOLDER_KUAFORLER.filter((k) => {
+    return allKuaforler.filter((k) => {
       if (nameFilter.trim() && !k.name.toLowerCase().includes(nameFilter.trim().toLowerCase()))
         return false;
       if (selectedIl && k.il !== selectedIl) return false;
@@ -172,16 +242,16 @@ export default function HomeScreen() {
       if (selectedMahalle && k.mahalle !== selectedMahalle) return false;
       return true;
     });
-  }, [nameFilter, selectedIl, selectedIlce, selectedMahalle]);
+  }, [allKuaforler, nameFilter, selectedIl, selectedIlce, selectedMahalle]);
 
-  const handleProfilePress = (kuafor: PlaceholderKuafor) => {
+  const handleProfilePress = (kuafor: KuaforListItem) => {
     Alert.alert(
       kuafor.name,
       `İl: ${kuafor.il}\nİlçe: ${kuafor.ilce}\nMahalle: ${kuafor.mahalle}\n\nKuaför profil sayfası henüz aktif değil.`,
     );
   };
 
-  const renderKuafor = ({ item }: { item: PlaceholderKuafor }) => {
+  const renderKuafor = ({ item }: { item: KuaforListItem }) => {
     const isSelected = selectedKuafor?.id === item.id;
 
     return (
@@ -282,20 +352,27 @@ export default function HomeScreen() {
         {filteredKuaforler.length} kuaför bulundu
       </Text>
 
-      {/* ── kuaför list ── */}
-      <FlatList
-        data={filteredKuaforler}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.list}
-        ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>Kuaför bulunamadı.</Text>
-            <Text style={styles.emptySubtext}>Filtrelerinizi değiştirmeyi deneyin.</Text>
-          </View>
-        }
-        renderItem={renderKuafor}
-        extraData={selectedKuafor}
-      />
+      {/* ── loading / kuaför list ── */}
+      {listLoading ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#6366F1" />
+          <Text style={styles.loadingText}>Kuaförler yükleniyor...</Text>
+        </View>
+      ) : (
+        <FlatList
+          data={filteredKuaforler}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.list}
+          ListEmptyComponent={
+            <View style={styles.emptyContainer}>
+              <Text style={styles.emptyText}>Kuaför bulunamadı.</Text>
+              <Text style={styles.emptySubtext}>Filtrelerinizi değiştirmeyi deneyin.</Text>
+            </View>
+          }
+          renderItem={renderKuafor}
+          extraData={selectedKuafor}
+        />
+      )}
     </View>
   );
 }
@@ -433,6 +510,18 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#9CA3AF',
     marginBottom: 6,
+  },
+
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  loadingText: {
+    fontSize: 14,
+    color: '#6B7280',
+    marginTop: 10,
   },
 
   /* list */

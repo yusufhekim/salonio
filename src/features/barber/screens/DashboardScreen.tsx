@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -6,12 +6,33 @@ import {
   FlatList,
   TouchableOpacity,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { useBookingStore } from '@store';
+import { useAuth } from '../../../context/AuthContext';
+import {
+  getAppointmentsByBarber,
+  cancelAppointmentInFirestore,
+} from '../../../services/appointmentService';
 import type { Appointment } from '@domain/appointment';
 
 export default function DashboardScreen() {
+  const { user } = useAuth();
   const appointments = useBookingStore((s) => s.appointments);
+  const setAppointments = useBookingStore((s) => s.setAppointments);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const uid = user?.uid;
+    if (!uid) {
+      setLoading(false);
+      return;
+    }
+    getAppointmentsByBarber(uid)
+      .then(setAppointments)
+      .finally(() => setLoading(false));
+  }, [user?.uid, setAppointments]);
+
   const bookedCount = appointments.filter((a) => a.status === 'booked').length;
   const cancelledCount = appointments.filter((a) => a.status === 'cancelled').length;
   const todayStr = new Date().toISOString().split('T')[0];
@@ -28,9 +49,17 @@ export default function DashboardScreen() {
         {
           text: 'İptal Et',
           style: 'destructive',
-          onPress: () => {
-            useBookingStore.getState().cancelAppointment(appointment.id);
-            Alert.alert('Bilgi', 'Randevu iptal edildi.');
+          onPress: async () => {
+            try {
+              await cancelAppointmentInFirestore(appointment.id);
+              if (user?.uid) {
+                const list = await getAppointmentsByBarber(user.uid);
+                setAppointments(list);
+              }
+              Alert.alert('Bilgi', 'Randevu iptal edildi.');
+            } catch (_e) {
+              Alert.alert('Hata', 'Randevu iptal edilemedi.');
+            }
           },
         },
         {
@@ -42,6 +71,15 @@ export default function DashboardScreen() {
       ]
     );
   };
+
+  if (loading) {
+    return (
+      <View style={[styles.container, styles.centered]}>
+        <ActivityIndicator size="large" color="#2563EB" />
+        <Text style={styles.loadingText}>Randevular yükleniyor...</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -103,6 +141,15 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     paddingHorizontal: 20,
     paddingTop: 20,
+  },
+  centered: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    fontSize: 14,
+    color: '#6B7280',
+    marginTop: 12,
   },
   title: {
     fontSize: 24,

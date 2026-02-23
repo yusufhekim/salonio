@@ -7,18 +7,36 @@ import {
   FlatList,
   Alert,
   ScrollView,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { generateAvailableSlots, generateSlotsFromWorkingHours, checkConflict } from '../../availability/services';
-import { useBookingStore, useCustomerStore, useBarberStore, type WorkingDayKey } from '@store';
+import { generateSlotsFromWorkingHours, checkConflict } from '../../availability/services';
+import {
+  useBookingStore,
+  useCustomerStore,
+  type WorkingDayKey,
+  type WorkingDays,
+  type WorkingHoursMap,
+  DEFAULT_WORKING_DAYS,
+  DEFAULT_WORKING_HOURS,
+} from '@store';
+import { useAuth } from '../../../context/AuthContext';
+import { getUserProfile } from '../../../services/authService';
+import {
+  getAppointmentsByCustomer,
+  cancelAppointmentInFirestore,
+} from '../../../services/appointmentService';
 import type { BookingStackParamList } from '../../customer/navigation/CustomerNavigator';
 
-type NavProp = NativeStackNavigationProp<BookingStackParamList, 'SlotPickerMain'>;
+type BarberSchedule = {
+  workingDays: WorkingDays;
+  workingHours: WorkingHoursMap;
+  dayOffDates: string[];
+};
 
-/** Same customer id used when creating appointments (BookingFlowScreen) */
-const CURRENT_CUSTOMER_ID = 'placeholder-customer';
+type NavProp = NativeStackNavigationProp<BookingStackParamList, 'SlotPickerMain'>;
 
 /** getDay() index → store key. Use only this for workingDays / workingHours lookups. */
 const WEEKDAY_MAP: Record<number, WorkingDayKey> = {
@@ -61,6 +79,7 @@ function isSlotInPast(localDate: Date, timeSlot: string): boolean {
 }
 
 export default function SlotPickerScreen() {
+  const { user } = useAuth();
   const navigation = useNavigation<NavProp>();
   const selectedKuafor = useCustomerStore((s) => s.selectedKuafor);
   const dateOptions = useMemo(() => getNextDays(7), []);
@@ -70,10 +89,37 @@ export default function SlotPickerScreen() {
 
   const appointments = useBookingStore((s) => s.appointments);
   const selectedBarber = useBookingStore((s) => s.selectedBarber);
+  const setAppointments = useBookingStore((s) => s.setAppointments);
   const hasAppointmentOnDate = useBookingStore((s) => s.hasAppointmentOnDate);
   const cancelAppointmentInStore = useBookingStore((s) => s.cancelAppointment);
-  const barberProfile = useBarberStore((s) => s.profile);
-  const dayOffDates = useBarberStore((s) => s.dayOffDates);
+
+  /** Selected barber's schedule from Firestore (workingDays, workingHours, dayOffDates). */
+  const [barberSchedule, setBarberSchedule] = useState<BarberSchedule | null>(null);
+  const [scheduleLoading, setScheduleLoading] = useState(false);
+
+  /** Load current customer's appointments from Firestore so hasAppointmentOnDate and slot conflict use real data. */
+  useEffect(() => {
+    const uid = user?.uid;
+    if (!uid) return;
+    getAppointmentsByCustomer(uid).then(setAppointments);
+  }, [user?.uid, setAppointments]);
+
+  /** When no selected barber in store, try to restore from customer's Firestore profile (so opening Randevu Al tab directly still shows saved barber). */
+  useEffect(() => {
+    if (selectedKuafor || !user?.uid) return;
+    getUserProfile(user.uid).then((data) => {
+      const p = data as Record<string, unknown> | null;
+      const id = p?.selectedBarberId as string | undefined;
+      const name = p?.selectedBarberName as string | undefined;
+      if (!id || !name) return;
+      const il = (p?.selectedBarberCity as string) ?? '';
+      const ilce = (p?.selectedBarberDistrict as string) ?? '';
+      const mahalle = (p?.selectedBarberNeighborhood as string) ?? '';
+      useCustomerStore.getState().setSelectedKuafor({ id, name, il, ilce, mahalle });
+      useBookingStore.getState().setSelectedBarber({ id, name });
+    });
+  }, [selectedKuafor, user?.uid]);
+
   /** Only booked appointments on selected date — used for conflict check and slot blocking. Cancelled are removed from store. */
   const appointmentsOnSelectedDate = appointments.filter((a) => a.date === selectedDate);
   const bookedForDate = appointmentsOnSelectedDate.filter((a) => a.status === 'booked');
@@ -85,11 +131,11 @@ export default function SlotPickerScreen() {
   }, [selectedDate]);
 
   const weekdayKey = WEEKDAY_MAP[localDate.getDay()];
-  const isSameBarber = selectedBarber?.id === barberProfile.kuaforId;
-  const workingDays = isSameBarber ? barberProfile.workingDays : null;
-  const workingHoursMap = isSameBarber ? barberProfile.workingHours : null;
+  const workingDays = barberSchedule?.workingDays ?? null;
+  const workingHoursMap = barberSchedule?.workingHours ?? null;
+  const dayOffDates = barberSchedule?.dayOffDates ?? [];
   /** Step 1: workingDays[weekdayKey] — if false, do not generate slots or show booking. */
-  const barberWorksOnSelectedDay = workingDays ? workingDays[weekdayKey] : true;
+  const barberWorksOnSelectedDay = workingDays ? workingDays[weekdayKey] : false;
   /** Step 2: only after working day is true, get hours for this weekday. */
   const dayHours = barberWorksOnSelectedDay ? workingHoursMap?.[weekdayKey] : null;
   /** Hours are valid when both start and end are set and not the "unset" default 00:00–00:00. */
@@ -99,13 +145,55 @@ export default function SlotPickerScreen() {
     dayHours.end &&
     !(dayHours.start === '00:00' && dayHours.end === '00:00');
 
-  /** Date-based day off: when same barber and selectedDate is in barber's dayOffDates, no slots. */
-  const isDayOff =
-    isSameBarber && dayOffDates.includes(selectedDate);
+  /** Date-based day off: selectedDate is in barber's dayOffDates → no slots. */
+  const isDayOff = dayOffDates.includes(selectedDate);
 
+  /** Seçilen günde kuaförün mola saati (kuaför takvimindeki gibi gösterilir). */
+  const hasBreak =
+    dayHours?.breakStart &&
+    dayHours?.breakEnd &&
+    dayHours.breakStart !== dayHours.breakEnd;
+  const breakLabel = hasBreak
+    ? `Mola: ${dayHours!.breakStart} - ${dayHours!.breakEnd}`
+    : null;
+
+  /** Load selected barber's working days/hours/dayOff from Firestore. */
+  useEffect(() => {
+    const barberId = selectedBarber?.id;
+    if (!barberId) {
+      setBarberSchedule(null);
+      return;
+    }
+    let cancelled = false;
+    setScheduleLoading(true);
+    getUserProfile(barberId)
+      .then((data) => {
+        if (cancelled || !data) return;
+        const raw = data as Record<string, unknown>;
+        const workingDays =
+          raw.workingDays != null
+            ? { ...DEFAULT_WORKING_DAYS, ...(raw.workingDays as WorkingDays) }
+            : { ...DEFAULT_WORKING_DAYS };
+        const workingHours =
+          raw.workingHours != null
+            ? { ...DEFAULT_WORKING_HOURS, ...(raw.workingHours as WorkingHoursMap) }
+            : { ...DEFAULT_WORKING_HOURS };
+        const dayOffDates = Array.isArray(raw.dayOffDates) ? raw.dayOffDates : [];
+        setBarberSchedule({ workingDays, workingHours, dayOffDates });
+      })
+      .finally(() => {
+        if (!cancelled) setScheduleLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedBarber?.id]);
+
+  /** Compute slots from Firestore schedule for selected date. */
   useEffect(() => {
     if (!selectedKuafor) return;
-    if (isSameBarber && dayOffDates.includes(selectedDate)) {
+    if (scheduleLoading) return;
+    if (isDayOff) {
       setSlots([]);
       setSelectedSlot(null);
       return;
@@ -122,14 +210,14 @@ export default function SlotPickerScreen() {
         )
       );
     } else {
-      setSlots(generateAvailableSlots(selectedKuafor.id, selectedDate));
+      setSlots([]);
     }
     setSelectedSlot(null);
   }, [
     selectedDate,
     selectedKuafor,
-    isSameBarber,
-    dayOffDates,
+    scheduleLoading,
+    isDayOff,
     barberWorksOnSelectedDay,
     hasValidHours,
     dayHours,
@@ -177,10 +265,15 @@ export default function SlotPickerScreen() {
           {
             text: 'İptal Et',
             style: 'destructive',
-            onPress: () => {
+            onPress: async () => {
               if (appt) {
-                cancelAppointmentInStore(appt.id);
-                setSelectedSlot(null);
+                try {
+                  await cancelAppointmentInFirestore(appt.id);
+                  cancelAppointmentInStore(appt.id);
+                  setSelectedSlot(null);
+                } catch (_e) {
+                  Alert.alert('Hata', 'Randevu iptal edilemedi.');
+                }
               }
             },
           },
@@ -301,8 +394,12 @@ export default function SlotPickerScreen() {
         </View>
 
         <View style={styles.slotsSection}>
-      {/* Step 0: date-based day off → no slots, no booking */}
-      {isDayOff ? (
+      {scheduleLoading ? (
+        <View style={styles.loadingBox}>
+          <ActivityIndicator size="large" color="#6366F1" />
+          <Text style={styles.loadingBoxText}>Kuaför çalışma saatleri yükleniyor...</Text>
+        </View>
+      ) : isDayOff ? (
         <View style={styles.onePerDayWarningBox}>
           <Text style={styles.onePerDayWarningIcon}>⚠</Text>
           <Text style={styles.onePerDayWarningText}>
@@ -333,6 +430,11 @@ export default function SlotPickerScreen() {
         </View>
       ) : (
         <>
+          {breakLabel ? (
+            <View style={styles.breakBox}>
+              <Text style={styles.breakLabel}>{breakLabel}</Text>
+            </View>
+          ) : null}
           <Text style={styles.subtitle}>Uygun saatleri seçin:</Text>
           <FlatList
             data={slots}
@@ -433,6 +535,31 @@ const styles = StyleSheet.create({
   },
   slotsSection: {
     flex: 1,
+  },
+  loadingBox: {
+    marginTop: 8,
+    padding: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadingBoxText: {
+    fontSize: 14,
+    color: '#6B7280',
+    marginTop: 12,
+  },
+  breakBox: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginBottom: 12,
+    backgroundColor: '#FEF3C7',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#F59E0B',
+  },
+  breakLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#92400E',
   },
   slotList: {
     flex: 1,
